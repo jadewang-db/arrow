@@ -10,7 +10,7 @@ import org.apache.arrow.flight.Location;
 public class DatabricksFlightSql {
     private final static String sqlEndpointServer = "e2-dogfood.staging.cloud.databricks.com";
     private final static String sqlEndpointHttpPath = "/sql/1.0/endpoints/5c89f447c476a5a8";
-    private final static String PAT = "dapi" + "fcbeefdf48a49dfa50c648c44bfe279c";
+    private final static String PAT = "";
 
     public static void main(String[] args) {
         FlightSqlProducer producer = new DatabricksFlightSqlProducer(
