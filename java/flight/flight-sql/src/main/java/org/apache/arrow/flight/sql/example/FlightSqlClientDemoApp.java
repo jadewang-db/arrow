@@ -39,6 +39,7 @@ import org.apache.commons.cli.ParseException;
 
 /**
  * Flight SQL Client Demo CLI Application.
+ * Yunbo
  */
 public class FlightSqlClientDemoApp implements AutoCloseable {
   public final List<CallOption> callOptions = new ArrayList<>();

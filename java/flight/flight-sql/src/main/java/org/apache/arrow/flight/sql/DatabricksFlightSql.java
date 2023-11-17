@@ -8,8 +8,14 @@ import org.apache.arrow.flight.Location;
  * listening 8081 port
  */
 public class DatabricksFlightSql {
+    private final static String sqlEndpointServer = "e2-dogfood.staging.cloud.databricks.com";
+    private final static String sqlEndpointHttpPath = "/sql/1.0/endpoints/5c89f447c476a5a8";
+    private final static String PAT = "dapifcbeefdf48a49dfa50c648c44bfe279c";
+
     public static void main(String[] args) {
-        FlightSqlProducer producer = new DatabricksFlightSqlProducer();
+        FlightSqlProducer producer = new DatabricksFlightSqlProducer(
+                sqlEndpointServer, sqlEndpointHttpPath, PAT
+        );
 
         FlightServer.Builder builder = FlightServer
                 .builder()

@@ -6,26 +6,42 @@ import org.apache.arrow.flight.sql.impl.FlightSql;
 import org.apache.arrow.memory.BufferAllocator;
 import org.apache.arrow.memory.RootAllocator;
 import org.apache.arrow.vector.IntVector;
+import org.apache.arrow.vector.VarCharVector;
 import org.apache.arrow.vector.VectorLoader;
 import org.apache.arrow.vector.VectorSchemaRoot;
 import org.apache.arrow.vector.ipc.message.ArrowFieldNode;
 import org.apache.arrow.vector.ipc.message.ArrowRecordBatch;
+import org.apache.arrow.vector.types.FloatingPointPrecision;
+import org.apache.arrow.vector.types.TimeUnit;
 import org.apache.arrow.vector.types.pojo.Field;
 import org.apache.arrow.vector.types.pojo.ArrowType;
-import org.apache.arrow.vector.types.pojo.FieldType;
 import org.apache.arrow.vector.types.pojo.Schema;
+import com.databricks.sdk.client.DatabricksConfig;
 
-import javax.lang.model.type.PrimitiveType;
+import java.sql.ResultSetMetaData;
+import java.sql.SQLException;
+import java.sql.Types;
+import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.List;
 import java.util.stream.Collectors;
 
 import static com.google.protobuf.Any.pack;
-import static java.util.Collections.list;
 import static java.util.Collections.singletonList;
 
 public class DatabricksFlightSqlProducer extends BasicFlightSqlProducer {
+    private final RestDatabricksClient restDatabricksClient;
+
+    private DatabricksResultSet resultSet = null;
+    private Schema schema = null;
+
+    public DatabricksFlightSqlProducer(String sqlEndpointServer, String sqlEndpointHttpPath, String token) {
+        DatabricksConfig config = new DatabricksConfig()
+                .setToken(token)
+                .setHost("https://" + sqlEndpointServer);
+        this.restDatabricksClient = new RestDatabricksClient(config, sqlEndpointHttpPath);
+    }
 
     private final BufferAllocator rootAllocator = new RootAllocator();
     @Override
@@ -49,28 +65,51 @@ public class DatabricksFlightSqlProducer extends BasicFlightSqlProducer {
         FlightSql.TicketStatementQuery ticket = FlightSql.TicketStatementQuery.newBuilder()
                 .setStatementHandle(request.getQueryBytes())
                 .build();
-
+        this.resultSet = DatabricksResultSet.of(restDatabricksClient.executeStatement(request.getQuery()));
         final Ticket t = new Ticket(pack(ticket).toByteArray());
-        final List<FlightEndpoint> endpoints = singletonList(new FlightEndpoint(t, Location.forGrpcInsecure("localhost", 8081)));
-
-        List<Field> fields = List.of(Field.nullablePrimitive("id", new ArrowType.Int(32, true)));
-        Schema schema = new Schema(fields);
-
+        final List<FlightEndpoint> endpoints = singletonList(
+                new FlightEndpoint(t, Location.forGrpcInsecure("localhost", 8081)));
+        this.schema = new Schema(extractColumns(resultSet.getMetaData()));
         FlightInfo info = new FlightInfo(schema, descriptor, endpoints, -1, -1);
-
         return info;
+    }
+
+    private static ArrowType.PrimitiveType toArrowType(int columnType) {
+        if (columnType == Types.INTEGER) return new ArrowType.Int(32, true);
+        if (columnType == Types.BOOLEAN) return new ArrowType.Bool();
+        if (columnType == Types.VARCHAR) return new ArrowType.Utf8();
+        if (columnType == Types.DECIMAL) return new ArrowType.Int(32, true);
+        if (columnType == Types.DATE) return new ArrowType.Date(
+                org.apache.arrow.vector.types.DateUnit.DAY);
+        if (columnType == Types.DOUBLE) return new ArrowType.FloatingPoint(FloatingPointPrecision.DOUBLE);
+        if (columnType == Types.FLOAT) return new ArrowType.FloatingPoint(FloatingPointPrecision.DOUBLE);
+        if (columnType == Types.BIGINT) return new ArrowType.Int(64, true);
+        if (columnType == Types.TIMESTAMP) return new ArrowType.Timestamp(TimeUnit.MICROSECOND, null);
+        return new ArrowType.Int(32, true);
+    }
+
+    private static List<Field> extractColumns(ResultSetMetaData metadata) {
+        List<Field> fields = new ArrayList<>();
+        try {
+            for (int i = 0; i < metadata.getColumnCount(); i++) {
+                fields.add(Field.nullablePrimitive(
+                        metadata.getColumnName(i + 1),
+                        toArrowType(metadata.getColumnType(i + 1))
+                ));
+            }
+        } catch (SQLException e) {
+            throw new RuntimeException(e);
+        }
+        return fields;
     }
 
     @Override
     public void getStreamStatement(final FlightSql.TicketStatementQuery ticketStatementQuery, final CallContext context,
                                    final ServerStreamListener listener) {
-
-        List<Field> fields = List.of(Field.nullablePrimitive("id", new ArrowType.Int(32, true)));
-        Schema schema = new Schema(fields);
         try (VectorSchemaRoot vectorSchemaRoot = VectorSchemaRoot.create(schema, rootAllocator)) {
             final VectorLoader loader = new VectorLoader(vectorSchemaRoot);
             listener.start(vectorSchemaRoot);
-            loader.load(createRecordBatch(rootAllocator, 10));
+            loader.load(createRecordBatch(schema, resultSet, rootAllocator));
             listener.putNext();
             vectorSchemaRoot.clear();
             listener.putNext();
@@ -78,32 +117,29 @@ public class DatabricksFlightSqlProducer extends BasicFlightSqlProducer {
         }
     }
 
-    private static ArrowRecordBatch createRecordBatch(BufferAllocator allocator, int numElements) {
-        // Define a schema for the batch (one int column)
-        Field intField = new Field("intColumn", FieldType.nullable(new ArrowType.Int(32, true)), null);
-        Schema schema = new Schema(Collections.singletonList(intField));
-
-        // Create a VectorSchemaRoot based on the schema
+    private static ArrowRecordBatch createRecordBatch(
+            Schema schema, DatabricksResultSet resultSet, BufferAllocator allocator) {
+        int rowCount = resultSet.getRows().size();
         try (VectorSchemaRoot root = VectorSchemaRoot.create(schema, allocator)) {
-            // Get the IntVector and allocate memory for numElements integers
-            IntVector intVector = (IntVector) root.getVector("intColumn");
-            intVector.allocateNew(numElements);
-
-            // Populate the IntVector with sample data
-            for (int i = 0; i < numElements; i++) {
-                intVector.setSafe(i, i);
+            VarCharVector vector = null;
+            int columnCount = schema.getFields().size();
+            for (int column = 0; column < columnCount; column++) {
+                Field field = schema.getFields().get(column);
+                vector = (VarCharVector) root.getVector(field.getName());
+                vector.allocateNew(rowCount);
+                for (int row = 0; row < rowCount; row++) {
+                    vector.setSafe(row, resultSet.getRows().get(row).get(column).getBytes());
+                }
+                vector.setValueCount(rowCount);
             }
-            intVector.setValueCount(numElements);
-
             // Set the row count for the root
-            root.setRowCount(numElements);
+            root.setRowCount(rowCount);
 
             // Now, create the ArrowRecordBatch
             ArrowRecordBatch recordBatch = new ArrowRecordBatch(
-                    numElements,
-                    Collections.singletonList(new ArrowFieldNode(numElements, 0)),
-                    Arrays.stream(intVector.getBuffers(false)).collect(Collectors.toList()));
-
+                    rowCount,
+                    Collections.singletonList(new ArrowFieldNode(rowCount, 0)),
+                    Arrays.stream(vector.getBuffers(false)).collect(Collectors.toList()));
             return recordBatch;
         }
     }
