@@ -2,19 +2,28 @@ package org.apache.arrow.flight.sql;
 
 import org.apache.arrow.flight.FlightServer;
 import org.apache.arrow.flight.Location;
+import org.apache.commons.cli.*;
 
 /**
  * start a flight sql service server using DatabricksFlighSqlProducer
  * listening 8081 port
  */
 public class DatabricksFlightSql {
-    private final static String sqlEndpointServer = "e2-dogfood.staging.cloud.databricks.com";
-    private final static String sqlEndpointHttpPath = "/sql/1.0/endpoints/5c89f447c476a5a8";
-    private final static String PAT = "";
-
     public static void main(String[] args) {
+        final Options options = new Options();
+        options.addRequiredOption("sqlEndpointServer", "sqlEndpointServer", true, "SQL endpoint to connect to");
+        options.addRequiredOption("sqlEndpointHttpPath", "sqlEndpointHttpPath", true, "SQL HTTP path to connect to");
+        options.addRequiredOption("token", "token", true, "Token to use");
+        CommandLine cmd = null;
+        try {
+            cmd = new DefaultParser().parse(options, args, /* stopAtNonOption */ true);
+        } catch (final ParseException e) {
+            throw new RuntimeException(e);
+        }
         FlightSqlProducer producer = new DatabricksFlightSqlProducer(
-                sqlEndpointServer, sqlEndpointHttpPath, PAT
+                cmd.getOptionValue("sqlEndpointServer"),
+                cmd.getOptionValue("sqlEndpointHttpPath"),
+                cmd.getOptionValue("token")
         );
 
         FlightServer.Builder builder = FlightServer
