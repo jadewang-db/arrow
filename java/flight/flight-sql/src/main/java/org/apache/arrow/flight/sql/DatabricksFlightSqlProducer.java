@@ -5,10 +5,7 @@ import org.apache.arrow.flight.*;
 import org.apache.arrow.flight.sql.impl.FlightSql;
 import org.apache.arrow.memory.BufferAllocator;
 import org.apache.arrow.memory.RootAllocator;
-import org.apache.arrow.vector.IntVector;
-import org.apache.arrow.vector.VarCharVector;
-import org.apache.arrow.vector.VectorLoader;
-import org.apache.arrow.vector.VectorSchemaRoot;
+import org.apache.arrow.vector.*;
 import org.apache.arrow.vector.ipc.message.ArrowFieldNode;
 import org.apache.arrow.vector.ipc.message.ArrowRecordBatch;
 import org.apache.arrow.vector.types.FloatingPointPrecision;
@@ -44,6 +41,7 @@ public class DatabricksFlightSqlProducer extends BasicFlightSqlProducer {
     }
 
     private final BufferAllocator rootAllocator = new RootAllocator();
+
     @Override
     protected <T extends Message> List<FlightEndpoint> determineEndpoints(T request, FlightDescriptor flightDescriptor, Schema schema) {
         final Ticket ticket = new Ticket(pack(request).toByteArray());
@@ -117,30 +115,55 @@ public class DatabricksFlightSqlProducer extends BasicFlightSqlProducer {
         }
     }
 
+    private static void writeColumn(VectorSchemaRoot root, Schema schema, int column, DatabricksResultSet resultSet) {
+        int rowCount = resultSet.getRows().size();
+        Field field = schema.getFields().get(column);
+        FieldVector vector = root.getVector(field.getName());
+        if (vector instanceof VarCharVector) {
+            VarCharVector varChar = (VarCharVector) vector;
+            varChar.allocateNew();
+            for (int row = 0; row < rowCount; row++) {
+                varChar.setSafe(row, resultSet.getRows().get(row).get(column).getBytes());
+            }
+        } else if (vector instanceof IntVector) {
+            IntVector intVector = (IntVector) vector;
+            intVector.allocateNew(rowCount);
+            for (int row = 0; row < rowCount; row++) {
+                intVector.setSafe(row, Integer.parseInt(resultSet.getRows().get(row).get(column)));
+            }
+        } else {
+            System.out.println("Unsupported vector type: " + vector.getClass().getName());
+        }
+        vector.setValueCount(rowCount);
+    }
+
     private static ArrowRecordBatch createRecordBatch(
             Schema schema, DatabricksResultSet resultSet, BufferAllocator allocator) {
         int rowCount = resultSet.getRows().size();
+        if (rowCount == 0) {
+            // This could be an update command without return values.
+            return new ArrowRecordBatch(
+                    0,
+                    Collections.emptyList(),
+                    Collections.emptyList());
+        }
         try (VectorSchemaRoot root = VectorSchemaRoot.create(schema, allocator)) {
-            VarCharVector vector = null;
             int columnCount = schema.getFields().size();
             for (int column = 0; column < columnCount; column++) {
-                Field field = schema.getFields().get(column);
-                vector = (VarCharVector) root.getVector(field.getName());
-                vector.allocateNew(rowCount);
-                for (int row = 0; row < rowCount; row++) {
-                    vector.setSafe(row, resultSet.getRows().get(row).get(column).getBytes());
-                }
-                vector.setValueCount(rowCount);
+                writeColumn(root, schema, column, resultSet);
             }
-            // Set the row count for the root
             root.setRowCount(rowCount);
 
-            // Now, create the ArrowRecordBatch
-            ArrowRecordBatch recordBatch = new ArrowRecordBatch(
-                    rowCount,
-                    Collections.singletonList(new ArrowFieldNode(rowCount, 0)),
-                    Arrays.stream(vector.getBuffers(false)).collect(Collectors.toList()));
-            return recordBatch;
+            // Create an ArrowRecordBatch
+            List<org.apache.arrow.memory.ArrowBuf> buffers = new ArrayList<>();
+            for (FieldVector v : root.getFieldVectors()) {
+                v.getFieldBuffers().forEach(buffers::add);
+            }
+            return new ArrowRecordBatch(
+                    root.getRowCount(),
+                    root.getFieldVectors().stream().map(v -> new ArrowFieldNode(rowCount, 0))
+                            .collect(Collectors.toList()),
+                    buffers);
         }
     }
 }

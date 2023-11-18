@@ -71,12 +71,12 @@ public class FlightSqlClientDemoApp implements AutoCloseable {
       try (final FlightSqlClientDemoApp thisApp = new FlightSqlClientDemoApp(new RootAllocator(Integer.MAX_VALUE))) {
         thisApp.executeApp(cmd);
       }
-
     } catch (final ParseException e) {
       System.out.println(e.getMessage());
       formatter.printHelp("FlightSqlClientDemoApp -host localhost -port 32010 ...", options);
       throw e;
     }
+    System.out.printf("Success in executing statement: %s\n", cmd.getOptionValue("query"));
   }
 
   /**
@@ -227,14 +227,14 @@ public class FlightSqlClientDemoApp implements AutoCloseable {
   }
 
   private void printFlightInfoResults(final FlightInfo flightInfo) throws Exception {
-    final FlightStream stream =
-        flightSqlClient.getStream(flightInfo.getEndpoints().get(0).getTicket(), getCallOptions());
-    while (stream.next()) {
-      try (final VectorSchemaRoot root = stream.getRoot()) {
-        System.out.println(root.contentToTSVString());
+    try (final FlightStream stream =
+                 flightSqlClient.getStream(flightInfo.getEndpoints().get(0).getTicket(), getCallOptions())) {
+      while (stream.next()) {
+        try (final VectorSchemaRoot root = stream.getRoot()) {
+          System.out.println(root.contentToTSVString());
+        }
       }
     }
-    stream.close();
   }
 
   @Override
