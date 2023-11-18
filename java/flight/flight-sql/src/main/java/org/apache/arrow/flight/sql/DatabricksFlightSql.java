@@ -2,6 +2,7 @@ package org.apache.arrow.flight.sql;
 
 import org.apache.arrow.flight.FlightServer;
 import org.apache.arrow.flight.Location;
+import org.apache.arrow.memory.BufferAllocator;
 import org.apache.commons.cli.*;
 
 /**
@@ -28,6 +29,7 @@ public class DatabricksFlightSql {
 
         FlightServer.Builder builder = FlightServer
                 .builder()
+                .allocator(new org.apache.arrow.memory.RootAllocator())
                 .producer(producer)
                 .location(Location.forGrpcInsecure("localhost", 8081));
 

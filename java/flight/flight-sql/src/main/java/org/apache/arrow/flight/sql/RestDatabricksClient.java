@@ -4,6 +4,7 @@ import com.databricks.sdk.DatabricksWorkspace;
 import com.databricks.sdk.client.DatabricksConfig;
 import com.databricks.sdk.service.sql.ExecuteStatementResponse;
 import com.databricks.sdk.service.sql.ExecuteStatementRequest;
+import com.databricks.sdk.service.sql.StatementState;
 
 public class RestDatabricksClient implements DatabricksClient {
     private final DatabricksWorkspace ws;
@@ -29,6 +30,9 @@ public class RestDatabricksClient implements DatabricksClient {
 
         try {
             ExecuteStatementResponse response = ws.statementExecution().executeStatement(request);
+            if (response.getStatus().getState() != StatementState.SUCCEEDED) {
+                System.out.printf("Failed to execute request. Resp: %s, %s", response.getStatementId(), response.getStatus());
+            }
             return new SqlExecuteQueryResult(
                     response.getManifest(), response.getResult());
         } catch (Exception e) {

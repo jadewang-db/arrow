@@ -1,8 +1,10 @@
 package org.apache.arrow.flight.sql;
 
+import com.google.protobuf.ByteString;
 import com.google.protobuf.Message;
 import org.apache.arrow.flight.*;
 import org.apache.arrow.flight.sql.impl.FlightSql;
+import org.apache.arrow.memory.ArrowBuf;
 import org.apache.arrow.memory.BufferAllocator;
 import org.apache.arrow.memory.RootAllocator;
 import org.apache.arrow.vector.*;
@@ -63,7 +65,9 @@ public class DatabricksFlightSqlProducer extends BasicFlightSqlProducer {
         FlightSql.TicketStatementQuery ticket = FlightSql.TicketStatementQuery.newBuilder()
                 .setStatementHandle(request.getQueryBytes())
                 .build();
+        System.out.printf("Executing query: %s%n", request.getQuery());
         this.resultSet = DatabricksResultSet.of(restDatabricksClient.executeStatement(request.getQuery()));
+        System.out.printf("Executed query with result: %s%n", resultSet.getRows());
         final Ticket t = new Ticket(pack(ticket).toByteArray());
         final List<FlightEndpoint> endpoints = singletonList(
                 new FlightEndpoint(t, Location.forGrpcInsecure("localhost", 8081)));
@@ -115,8 +119,25 @@ public class DatabricksFlightSqlProducer extends BasicFlightSqlProducer {
         }
     }
 
+    @Override
+    public Runnable acceptPutStatement(FlightSql.CommandStatementUpdate command, CallContext context,
+                                       FlightStream flightStream, StreamListener<PutResult> ackStream) {
+        return () -> {
+            System.out.printf("Executing query: %s%n", command.getQuery());
+            DatabricksResultSet resultSet = DatabricksResultSet.of(restDatabricksClient.executeStatement(command.getQuery()));
+            System.out.printf("Executed query with result: %s%n", resultSet.getRows());
+            final FlightSql.DoPutUpdateResult build =
+                    FlightSql.DoPutUpdateResult.newBuilder().setRecordCount(1).build();
+            try (final ArrowBuf buffer = rootAllocator.buffer(build.getSerializedSize())) {
+                buffer.writeBytes(build.toByteArray());
+                ackStream.onNext(PutResult.metadata(buffer));
+                ackStream.onCompleted();
+            }
+        };
+    }
+
     private static void writeColumn(VectorSchemaRoot root, Schema schema, int column, DatabricksResultSet resultSet) {
-        int rowCount = resultSet.getRows().size();
+        int rowCount = resultSet.getRows() == null ? 0 : resultSet.getRows().size();
         Field field = schema.getFields().get(column);
         FieldVector vector = root.getVector(field.getName());
         if (vector instanceof VarCharVector) {
@@ -131,6 +152,12 @@ public class DatabricksFlightSqlProducer extends BasicFlightSqlProducer {
             for (int row = 0; row < rowCount; row++) {
                 intVector.setSafe(row, Integer.parseInt(resultSet.getRows().get(row).get(column)));
             }
+        } else if (vector instanceof BigIntVector) {
+            BigIntVector bigIntVector = (BigIntVector) vector;
+            bigIntVector.allocateNew(rowCount);
+            for (int row = 0; row < rowCount; row++) {
+                bigIntVector.setSafe(row, Integer.parseInt(resultSet.getRows().get(row).get(column)));
+            }
         } else {
             System.out.println("Unsupported vector type: " + vector.getClass().getName());
         }
@@ -139,7 +166,7 @@ public class DatabricksFlightSqlProducer extends BasicFlightSqlProducer {
 
     private static ArrowRecordBatch createRecordBatch(
             Schema schema, DatabricksResultSet resultSet, BufferAllocator allocator) {
-        int rowCount = resultSet.getRows().size();
+        int rowCount = resultSet.getRows() == null ? 0 : resultSet.getRows().size();
         if (rowCount == 0) {
             // This could be an update command without return values.
             return new ArrowRecordBatch(
